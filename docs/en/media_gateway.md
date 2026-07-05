@@ -34,6 +34,11 @@ The current implementation processes audio packets and returns them to
 `client_port + 1`. Video packets are processed through a separate
 Deep-Live-Cam worker process and returned to `client_port + 2`.
 
+The preview client registers its own UDP return ports with the gateway by
+sending control packets from the exact sockets that will receive audio and
+video. This makes the return path work through NAT, as long as the gateway can
+reply to the same public UDP mappings created by the preview client.
+
 ## Protocol
 
 `backend/media_gateway/protocol.py` defines a binary packet header:
@@ -114,6 +119,8 @@ Run preview on the operator machine:
 
 ```bash
 python -m backend.media_gateway.preview_client \
+  --gateway-host CLUSTER_IP \
+  --gateway-port 12000 \
   --audio-port 11001 \
   --video-port 11002
 ```

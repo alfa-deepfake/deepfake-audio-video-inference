@@ -106,6 +106,7 @@ class MediaGatewayProtocol(asyncio.DatagramProtocol):
             logger.warning("unsupported audio codec from %s: %s", addr, packet.header.codec)
             return
         output_payload = self.audio_engine.process_pcm16(packet.payload)
+        return_addr = session.audio_return_addr or (addr[0], addr[1] + self.cfg.audio_return_port_offset)
         for response in packetize_payload(
             stream_type=StreamType.AUDIO,
             codec=Codec.PCM16,
@@ -114,10 +115,7 @@ class MediaGatewayProtocol(asyncio.DatagramProtocol):
             timestamp_us=packet.header.timestamp_us,
             payload=output_payload,
         ):
-            self.transport.sendto(
-                response.to_bytes(),
-                (addr[0], addr[1] + self.cfg.audio_return_port_offset),
-            )
+            self.transport.sendto(response.to_bytes(), return_addr)
 
     def _handle_video(self, packet: MediaPacket, addr, session: SessionState) -> None:
         session.video.packets_received += 1
@@ -126,6 +124,7 @@ class MediaGatewayProtocol(asyncio.DatagramProtocol):
         output_payload = packet.payload
         if self.video_engine is not None and packet.header.codec == Codec.MJPEG:
             output_payload = self.video_engine.process_mjpeg(packet.payload)
+        return_addr = session.video_return_addr or (addr[0], addr[1] + self.cfg.video_return_port_offset)
         for response in packetize_payload(
             stream_type=StreamType.VIDEO,
             codec=packet.header.codec,
@@ -134,10 +133,7 @@ class MediaGatewayProtocol(asyncio.DatagramProtocol):
             timestamp_us=packet.header.timestamp_us,
             payload=output_payload,
         ):
-            self.transport.sendto(
-                response.to_bytes(),
-                (addr[0], addr[1] + self.cfg.video_return_port_offset),
-            )
+            self.transport.sendto(response.to_bytes(), return_addr)
         logger.debug(
             "video passthrough session=%s seq=%s codec=%s size=%s",
             packet.header.session_id.hex(),
@@ -151,6 +147,16 @@ class MediaGatewayProtocol(asyncio.DatagramProtocol):
             payload = json.loads(packet.payload.decode("utf-8"))
         except Exception:
             payload = {"raw": packet.payload.decode("utf-8", errors="replace")}
+        if payload.get("kind") == "register_return":
+            stream = payload.get("stream")
+            if stream == "audio":
+                session.audio_return_addr = addr
+                logger.info("registered audio return addr for session=%s -> %s", session.session_id.hex(), addr)
+                return
+            if stream == "video":
+                session.video_return_addr = addr
+                logger.info("registered video return addr for session=%s -> %s", session.session_id.hex(), addr)
+                return
         logger.info("control packet from %s session=%s payload=%s", addr, session.session_id.hex(), payload)
 
 

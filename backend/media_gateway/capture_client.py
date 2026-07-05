@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import socket
 import threading
@@ -16,6 +17,7 @@ from backend.media_gateway.protocol import Codec, StreamType, packetize_payload
 
 
 logger = logging.getLogger("capture_client")
+DEFAULT_SESSION_ID = "default"
 
 
 try:
@@ -33,6 +35,8 @@ except ImportError:  # pragma: no cover - optional dependency
 class CaptureConfig:
     gateway_host: str
     gateway_port: int
+    local_bind_host: str
+    local_bind_port: int
     session_id: bytes
     audio_sample_rate: int
     audio_block_samples: int
@@ -49,7 +53,9 @@ def parse_args() -> CaptureConfig:
     parser = argparse.ArgumentParser(description="Send webcam and microphone streams to the media gateway over UDP.")
     parser.add_argument("--gateway-host", required=True)
     parser.add_argument("--gateway-port", type=int, default=11000)
-    parser.add_argument("--session-id", default="")
+    parser.add_argument("--local-bind-host", default="0.0.0.0")
+    parser.add_argument("--local-bind-port", type=int, default=11000)
+    parser.add_argument("--session-id", default=DEFAULT_SESSION_ID)
     parser.add_argument("--audio-sample-rate", type=int, default=48000)
     parser.add_argument("--audio-block-samples", type=int, default=12000)
     parser.add_argument("--audio-device", type=int, default=None)
@@ -60,11 +66,16 @@ def parse_args() -> CaptureConfig:
     parser.add_argument("--jpeg-quality", type=int, default=80)
     parser.add_argument("--source-wav", default=None, help="Read audio from wav file instead of microphone")
     args = parser.parse_args()
-    session_id = args.session_id.encode("utf-8")[:16] if args.session_id else uuid.uuid4().bytes
-    session_id = session_id.ljust(16, b"\x00")
+    session_id = (
+        args.session_id.encode("utf-8")[:16].ljust(16, b"\x00")
+        if args.session_id
+        else uuid.uuid4().bytes
+    )
     return CaptureConfig(
         gateway_host=args.gateway_host,
         gateway_port=args.gateway_port,
+        local_bind_host=args.local_bind_host,
+        local_bind_port=args.local_bind_port,
         session_id=session_id,
         audio_sample_rate=args.audio_sample_rate,
         audio_block_samples=args.audio_block_samples,
@@ -82,8 +93,30 @@ class UdpMediaSender:
     def __init__(self, cfg: CaptureConfig) -> None:
         self.cfg = cfg
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind((cfg.local_bind_host, cfg.local_bind_port))
+        logger.info(
+            "sending gateway traffic from udp://%s:%s to udp://%s:%s",
+            cfg.local_bind_host,
+            cfg.local_bind_port,
+            cfg.gateway_host,
+            cfg.gateway_port,
+        )
         self.audio_sequence = 0
         self.video_sequence = 0
+        self.control_sequence = 0
+
+    def send_control(self, payload: dict) -> None:
+        encoded = json.dumps(payload).encode("utf-8")
+        for packet in packetize_payload(
+            stream_type=StreamType.CONTROL,
+            codec=Codec.JSON,
+            session_id=self.cfg.session_id,
+            sequence_number=self.control_sequence,
+            timestamp_us=time.time_ns() // 1000,
+            payload=encoded,
+        ):
+            self.sock.sendto(packet.to_bytes(), (self.cfg.gateway_host, self.cfg.gateway_port))
+        self.control_sequence += 1
 
     def send_audio(self, payload: bytes) -> None:
         for packet in packetize_payload(
@@ -193,6 +226,14 @@ def main() -> None:
     )
     cfg = parse_args()
     sender = UdpMediaSender(cfg)
+    sender.send_control(
+        {
+            "kind": "capture_started",
+            "audio_sample_rate": cfg.audio_sample_rate,
+            "audio_block_samples": cfg.audio_block_samples,
+            "video_fps": cfg.video_fps,
+        }
+    )
     threads = [
         threading.Thread(target=microphone_loop, args=(cfg, sender), daemon=True),
         threading.Thread(target=webcam_loop, args=(cfg, sender), daemon=True),

@@ -19,10 +19,11 @@ class SessionState:
     audio: StreamState = field(default_factory=StreamState)
     video: StreamState = field(default_factory=StreamState)
     last_client_addr: Optional[tuple[str, int]] = None
+    audio_return_addr: Optional[tuple[str, int]] = None
+    video_return_addr: Optional[tuple[str, int]] = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
     def touch(self, client_addr: tuple[str, int]) -> None:
         self.last_client_addr = client_addr
         self.updated_at = time.time()
-
