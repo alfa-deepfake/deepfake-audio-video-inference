@@ -3,6 +3,12 @@
 <h1>Retrieval-based-Voice-Conversion-WebUI</h1>
 一个基于VITS的简单易用的变声框架<br><br>
 
+> Fork note: this repository is being adapted as `deepfake-voice-inference`,
+> a headless realtime RVC inference service focused on local UDP transport,
+> low latency, and Docker deployment. See
+> [docs/en/udp_inference.md](./docs/en/udp_inference.md) for the current
+> UDP prototype.
+
 [![madewithlove](https://img.shields.io/badge/made_with-%E2%9D%A4-red?style=for-the-badge&labelColor=orange
 )](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)
 

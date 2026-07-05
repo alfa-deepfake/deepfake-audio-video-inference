@@ -1,7 +1,7 @@
 [tool.poetry]
-name = "rvc-beta"
+name = "deepfake-voice-inference"
 version = "0.1.0"
-description = ""
+description = "Headless realtime RVC inference over UDP"
 authors = ["lj1995"]
 license = "MIT"
 
