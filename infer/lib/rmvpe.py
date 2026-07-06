@@ -6,16 +6,6 @@ import torch
 
 from infer.lib import jit
 
-try:
-    # Fix "Torch not compiled with CUDA enabled"
-    import intel_extension_for_pytorch as ipex  # pylint: disable=import-error, unused-import
-
-    if torch.xpu.is_available():
-        from infer.modules.ipex import ipex_init
-
-        ipex_init()
-except Exception:  # pylint: disable=broad-exception-caught
-    pass
 import torch.nn as nn
 import torch.nn.functional as F
 from librosa.util import normalize, pad_center, tiny
@@ -504,13 +494,7 @@ class RMVPE:
             is_half, 128, 16000, 1024, 160, None, 30, 8000
         ).to(device)
         if "privateuseone" in str(device):
-            import onnxruntime as ort
-
-            ort_session = ort.InferenceSession(
-                "%s/rmvpe.onnx" % os.environ["rmvpe_root"],
-                providers=["DmlExecutionProvider"],
-            )
-            self.model = ort_session
+            raise RuntimeError("DirectML RMVPE is not included in the trimmed realtime runtime")
         else:
             if str(self.device) == "cuda":
                 self.device = torch.device("cuda:0")

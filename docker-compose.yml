@@ -1,16 +1,13 @@
-version: "3.8"
 services:
-  rvc:
+  stream-server:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: rvc
+    container_name: deepfake-voice-stream-server
     volumes:
-      - ./weights:/app/assets/weights
-      - ./opt:/app/opt
-      # - ./dataset:/app/dataset # you can use this folder in order to provide your dataset for model training
+      - ./assets:/app/assets
     ports:
-      - 7865:7865
+      - "13000:13000"
     deploy:
       resources:
         reservations:
