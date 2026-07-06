@@ -91,6 +91,48 @@ Not implemented yet:
 
 ## First End-to-End Loop
 
+For the lowest setup friction and best behavior behind cluster firewalls, use
+stream mode. It runs one persistent binary stream through SSH and drops stale
+video frames instead of accumulating latency.
+
+## Stream Mode
+
+Start the stream server on the cluster:
+
+```bash
+PYTHONPATH=$PWD .venv/bin/python -m backend.media_gateway.stream_server \
+  --host 127.0.0.1 \
+  --port 13000 \
+  --audio-model-path assets/weights/voice_model.pth \
+  --audio-index-path assets/indices/voice_model.index \
+  --audio-index-rate 0.3 \
+  --video-dlc-root ~/workspace_w9line/deep_face/extracted/Deep-Live-Cam \
+  --video-source-face ~/workspace_w9line/deep_face/extracted/Deep-Live-Cam/классный_чел_пнг.jpg \
+  --video-python-path ~/workspace_w9line/deep_face/extracted/Deep-Live-Cam/.venv_dlc/bin/python \
+  --video-cuda-lib-root ~/work/deepfake-voice-inference/.venv/lib/python3.10/site-packages \
+  --video-execution-provider cuda \
+  --video-camera-fps 15.0
+```
+
+Create the SSH tunnel on the operator machine:
+
+```bash
+ssh -i /tmp/deepfake_voice_cluster_key -p 22010 \
+  -N -L 13000:127.0.0.1:13000 master@62.183.4.208
+```
+
+Run the combined stream client on the operator machine:
+
+```bash
+PYTHONPATH=$PWD python -m backend.media_gateway.stream_client \
+  --gateway-host 127.0.0.1 \
+  --gateway-port 13000 \
+  --video-width 512 \
+  --video-height 288 \
+  --video-fps 15 \
+  --jpeg-quality 65
+```
+
 If the provider exposes UDP to the gateway, use the UDP flow below. If external
 UDP is blocked, use the UDP-over-SSH bridge instead.
 
