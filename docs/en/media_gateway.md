@@ -100,9 +100,7 @@ video frames instead of accumulating latency.
 Start the stream server on the cluster:
 
 ```bash
-PYTHONPATH=$PWD:/home/master/work/deepfake-stream-signature/src \
-  TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 \
-  .venv/bin/python -m backend.media_gateway.stream_server \
+TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 PYTHONPATH=$PWD .venv/bin/python -m backend.media_gateway.stream_server \
   --host 127.0.0.1 \
   --port 13000 \
   --audio-model-path assets/weights/voice_model.pth \
@@ -126,8 +124,7 @@ ssh -i /tmp/deepfake_voice_cluster_key -p 22010 \
 Run the combined stream client on the operator machine:
 
 ```bash
-PYTHONPATH=$PWD:/home/pinfoxxx/work/alfa/deepfake-stream-signature/src \
-  python -m backend.media_gateway.stream_client \
+PYTHONPATH=$PWD python -m backend.media_gateway.stream_client \
   --gateway-host 127.0.0.1 \
   --gateway-port 13000 \
   --video-width 512 \
@@ -140,17 +137,14 @@ To simulate a C2PA-like signed deepfake stream, start the server with signature
 checking and pass the same test key to the client:
 
 ```bash
-PYTHONPATH=$PWD:/home/master/work/deepfake-stream-signature/src \
-  TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 \
-  .venv/bin/python -m backend.media_gateway.stream_server \
+TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 PYTHONPATH=$PWD .venv/bin/python -m backend.media_gateway.stream_server \
   ... \
   --signature-policy log \
   --signature-trusted-key deepfake-client-test=dev-secret
 ```
 
 ```bash
-PYTHONPATH=$PWD:/home/pinfoxxx/work/alfa/deepfake-stream-signature/src \
-  python -m backend.media_gateway.stream_client \
+PYTHONPATH=$PWD python -m backend.media_gateway.stream_client \
   ... \
   --signature-key dev-secret \
   --signature-key-id deepfake-client-test

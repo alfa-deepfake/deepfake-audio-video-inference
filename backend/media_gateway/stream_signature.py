@@ -1,19 +1,43 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from backend.media_gateway.protocol import MediaPacket, PacketHeader
-from deepfake_stream_signature import (
-    DEFAULT_ISSUER,
-    DEFAULT_KEY_ID,
-    SignatureConfig,
-    SignatureStatus,
-    StreamPacket,
-    StreamPacketHeader,
-    StreamSignatureVerifier as CoreStreamSignatureVerifier,
-    StreamSigner as CoreStreamSigner,
-    parse_key_value_pairs,
-)
+
+
+def _ensure_signature_package_path() -> None:
+    sibling_src = Path(__file__).resolve().parents[2].parent / "deepfake-stream-signature" / "src"
+    if sibling_src.exists():
+        sys.path.insert(0, str(sibling_src))
+
+
+try:
+    from deepfake_stream_signature import (
+        DEFAULT_ISSUER,
+        DEFAULT_KEY_ID,
+        SignatureConfig,
+        SignatureStatus,
+        StreamPacket,
+        StreamPacketHeader,
+        StreamSignatureVerifier as CoreStreamSignatureVerifier,
+        StreamSigner as CoreStreamSigner,
+        parse_key_value_pairs,
+    )
+except ModuleNotFoundError:
+    _ensure_signature_package_path()
+    from deepfake_stream_signature import (
+        DEFAULT_ISSUER,
+        DEFAULT_KEY_ID,
+        SignatureConfig,
+        SignatureStatus,
+        StreamPacket,
+        StreamPacketHeader,
+        StreamSignatureVerifier as CoreStreamSignatureVerifier,
+        StreamSigner as CoreStreamSigner,
+        parse_key_value_pairs,
+    )
 
 
 @dataclass(frozen=True)
