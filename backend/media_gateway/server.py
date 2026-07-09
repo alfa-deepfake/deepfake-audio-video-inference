@@ -4,7 +4,7 @@ import argparse
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from backend.media_gateway.audio_engine import AudioEngineConfig, AudioInferenceEngine
 from backend.media_gateway.protocol import (
@@ -16,6 +16,12 @@ from backend.media_gateway.protocol import (
     packetize_payload,
 )
 from backend.media_gateway.session import SessionState
+from backend.media_gateway.stream_signature import (
+    SignatureStatus,
+    StreamSignatureVerifier,
+    VerificationResult,
+    parse_key_value_pairs,
+)
 from backend.media_gateway.video_engine import VideoEngineConfig, VideoInferenceEngine
 
 
@@ -40,6 +46,8 @@ class GatewayConfig:
     video_camera_fps: float = 20.0
     video_python_path: str = ""
     video_cuda_lib_root: str = ""
+    signature_policy: str = "off"
+    trusted_signature_keys: dict[str, bytes] = field(default_factory=dict)
 
 
 class MediaGatewayProtocol(asyncio.DatagramProtocol):
@@ -48,6 +56,8 @@ class MediaGatewayProtocol(asyncio.DatagramProtocol):
         self.transport = None
         self.sessions: dict[bytes, SessionState] = {}
         self.reassembler = PacketReassembler()
+        self.signature_verifier = StreamSignatureVerifier(cfg.trusted_signature_keys)
+        self.signature_status_logged: set[tuple[bytes, int, SignatureStatus, str]] = set()
         self.audio_engine = AudioInferenceEngine(
             AudioEngineConfig(
                 model_path=cfg.audio_model_path,
@@ -85,6 +95,10 @@ class MediaGatewayProtocol(asyncio.DatagramProtocol):
             return
         if packet is None:
             return
+        verification = self._verify_packet(packet, addr)
+        if verification is None:
+            return
+        packet = verification.packet
 
         session = self.sessions.setdefault(
             packet.header.session_id, SessionState(session_id=packet.header.session_id)
@@ -97,6 +111,55 @@ class MediaGatewayProtocol(asyncio.DatagramProtocol):
             self._handle_video(packet, addr, session)
         else:
             self._handle_control(packet, addr, session)
+
+    def _verify_packet(self, packet: MediaPacket, addr) -> VerificationResult | None:
+        if self.cfg.signature_policy == "off":
+            return VerificationResult(SignatureStatus.DISABLED, packet)
+        try:
+            verification = self.signature_verifier.verify_and_strip(packet)
+        except Exception as exc:
+            logger.warning("invalid signature envelope from %s: %s", addr, exc)
+            return None if self.cfg.signature_policy == "block" else VerificationResult(SignatureStatus.INVALID, packet, str(exc))
+        if verification.status not in {SignatureStatus.ABSENT, SignatureStatus.TRUSTED, SignatureStatus.DISABLED}:
+            logger.warning(
+                "stream signature %s from %s session=%s stream=%s seq=%s key=%s reason=%s",
+                verification.status.value,
+                addr,
+                packet.header.session_id.hex(),
+                packet.header.stream_type.name,
+                packet.header.sequence_number,
+                verification.key_id,
+                verification.reason,
+            )
+            if self.cfg.signature_policy == "block":
+                return None
+        elif verification.status in {SignatureStatus.ABSENT, SignatureStatus.TRUSTED}:
+            log_key = (
+                packet.header.session_id,
+                int(packet.header.stream_type),
+                verification.status,
+                verification.key_id,
+            )
+            if log_key not in self.signature_status_logged:
+                self.signature_status_logged.add(log_key)
+                if verification.status == SignatureStatus.TRUSTED:
+                    logger.info(
+                        "trusted signed stream from %s session=%s stream=%s key=%s first_seq=%s",
+                        addr,
+                        packet.header.session_id.hex(),
+                        packet.header.stream_type.name,
+                        verification.key_id,
+                        packet.header.sequence_number,
+                    )
+                else:
+                    logger.info(
+                        "unsigned stream accepted from %s session=%s stream=%s first_seq=%s",
+                        addr,
+                        packet.header.session_id.hex(),
+                        packet.header.stream_type.name,
+                        packet.header.sequence_number,
+                    )
+        return verification
 
     def _handle_audio(self, packet: MediaPacket, addr, session: SessionState) -> None:
         session.audio.packets_received += 1
@@ -176,6 +239,13 @@ def parse_args() -> GatewayConfig:
     parser.add_argument("--video-camera-fps", type=float, default=20.0)
     parser.add_argument("--video-python-path", default="")
     parser.add_argument("--video-cuda-lib-root", default="")
+    parser.add_argument("--signature-policy", choices=("off", "log", "block"), default="off")
+    parser.add_argument(
+        "--signature-trusted-key",
+        action="append",
+        default=[],
+        help="Trusted test stream signature key in key_id=secret format. Can be passed multiple times.",
+    )
     args = parser.parse_args()
     return GatewayConfig(
         host=args.host,
@@ -192,6 +262,8 @@ def parse_args() -> GatewayConfig:
         video_camera_fps=args.video_camera_fps,
         video_python_path=args.video_python_path,
         video_cuda_lib_root=args.video_cuda_lib_root,
+        signature_policy=args.signature_policy,
+        trusted_signature_keys=parse_key_value_pairs(args.signature_trusted_key),
     )
 
 
