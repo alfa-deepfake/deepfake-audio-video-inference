@@ -1,4 +1,4 @@
-# Shared helpers for the deepfake-voice-inference launch scripts.
+# Shared helpers for the deepfake-audio-video-inference launch scripts.
 # Sourced by every scripts/*.sh — not meant to be run directly.
 #
 # Responsibilities:
@@ -11,7 +11,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ALFA_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
 export REPO_ROOT
+export ALFA_ROOT
 
 # Defaults first, then the gitignored real config overrides them. Both are
 # sourced so values may reference $REPO_ROOT / $HOME and each other.
@@ -22,13 +24,22 @@ if [[ -f "$SCRIPT_DIR/config.env" ]]; then
   source "$SCRIPT_DIR/config.env"
 fi
 
-# Runtime environment shared by all python entry points.
-export PYTHONPATH="$REPO_ROOT"
+# Runtime environment shared by all python entry points. Include sibling src
+# trees so a fresh cluster checkout works before editable installs are created.
+PYTHONPATH_PARTS=(
+  "$REPO_ROOT"
+  "$ALFA_ROOT/deepfake-media-transport/src"
+  "$ALFA_ROOT/deepfake-stream-signature/src"
+)
+export PYTHONPATH="$(IFS=:; echo "${PYTHONPATH_PARTS[*]}")${PYTHONPATH:+:$PYTHONPATH}"
 export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 
 # Activate the project venv unless the caller already provided a python.
 activate_venv() {
-  if [[ -f "$REPO_ROOT/.venv/bin/activate" ]]; then
+  if [[ -f "$ALFA_ROOT/.venv/bin/activate" ]]; then
+    # shellcheck disable=SC1091
+    source "$ALFA_ROOT/.venv/bin/activate"
+  elif [[ -f "$REPO_ROOT/.venv/bin/activate" ]]; then
     # shellcheck disable=SC1091
     source "$REPO_ROOT/.venv/bin/activate"
   fi
