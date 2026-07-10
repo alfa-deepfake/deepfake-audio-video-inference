@@ -6,7 +6,6 @@ import json
 import logging
 import queue
 import socket
-import struct
 import threading
 import time
 import uuid
@@ -16,17 +15,20 @@ from typing import Optional
 
 import numpy as np
 
-from backend.media_gateway.protocol import Codec, MediaPacket, PacketHeader, PacketReassembler, StreamType, packetize_payload
-from backend.media_gateway.stream_signature import (
-    DEFAULT_ISSUER,
-    DEFAULT_KEY_ID,
-    SignatureConfig,
-    StreamSigner,
+from deepfake_media_transport import (
+    Codec,
+    MediaPacket,
+    PacketReassembler,
+    StreamType,
+    read_frame,
+    write_frame,
 )
 
+from backend.media_gateway.signature_cli import add_signature_sender_args, signature_config_from_args
+from backend.media_gateway.signed_packets import signed_packetize_payload
+from backend.media_gateway.stream_signature import SignatureConfig, StreamSigner
 
-LENGTH_STRUCT = struct.Struct("!I")
-MAX_FRAME_SIZE = 16 * 1024 * 1024
+
 DEFAULT_SESSION_ID = "default"
 logger = logging.getLogger("media_gateway.stream_client")
 
@@ -84,9 +86,7 @@ def parse_args() -> StreamClientConfig:
     parser.add_argument("--video-fps", type=float, default=15.0)
     parser.add_argument("--jpeg-quality", type=int, default=65)
     parser.add_argument("--source-wav", default=None, help="Read audio from wav file instead of microphone")
-    parser.add_argument("--signature-key", default="", help="Enable test C2PA-like stream signatures with this shared secret")
-    parser.add_argument("--signature-key-id", default=DEFAULT_KEY_ID)
-    parser.add_argument("--signature-issuer", default=DEFAULT_ISSUER)
+    add_signature_sender_args(parser)
     args = parser.parse_args()
     session_id = (
         args.session_id.encode("utf-8")[:16].ljust(16, b"\x00")
@@ -106,12 +106,7 @@ def parse_args() -> StreamClientConfig:
         video_fps=args.video_fps,
         jpeg_quality=args.jpeg_quality,
         source_wav=args.source_wav,
-        signature=SignatureConfig(
-            enabled=bool(args.signature_key),
-            key_id=args.signature_key_id,
-            secret=args.signature_key.encode("utf-8"),
-            issuer=args.signature_issuer,
-        ),
+        signature=signature_config_from_args(args),
     )
 
 
@@ -142,40 +137,22 @@ class StreamConnection:
 
     def receive(self) -> MediaPacket:
         while True:
-            length = LENGTH_STRUCT.unpack(read_exact(self.sock, LENGTH_STRUCT.size))[0]
-            if length > MAX_FRAME_SIZE:
-                raise ValueError(f"stream frame too large: {length}")
-            packet = self.reassembler.push(MediaPacket.from_bytes(read_exact(self.sock, length)))
+            packet = self.reassembler.push(MediaPacket.from_bytes(read_frame(self.sock)))
             if packet is not None:
                 return packet
 
     def _send_payload(self, stream_type: StreamType, codec: Codec, payload: bytes, sequence_number: int) -> None:
-        timestamp_us = time.time_ns() // 1000
-        signed_packet = self.signer.sign_packet(
-            MediaPacket(
-                header=PacketHeader(
-                    stream_type=stream_type,
-                    codec=codec,
-                    session_id=self.cfg.session_id,
-                    sequence_number=sequence_number,
-                    timestamp_us=timestamp_us,
-                    payload_size=len(payload),
-                ),
-                payload=payload,
-            )
-        )
-        packets = packetize_payload(
+        packets = signed_packetize_payload(
+            signer=self.signer,
             stream_type=stream_type,
             codec=codec,
             session_id=self.cfg.session_id,
             sequence_number=sequence_number,
-            timestamp_us=timestamp_us,
-            payload=signed_packet.payload,
+            payload=payload,
         )
         with self.send_lock:
             for packet in packets:
-                data = packet.to_bytes()
-                self.sock.sendall(LENGTH_STRUCT.pack(len(data)) + data)
+                write_frame(self.sock, packet.to_bytes())
 
 
 def response_loop(conn: StreamConnection, audio_queue: queue.Queue, video_queue: queue.Queue) -> None:
@@ -374,18 +351,6 @@ def put_latest(item_queue: queue.Queue, item: bytes) -> None:
         except queue.Empty:
             pass
         item_queue.put_nowait(item)
-
-
-def read_exact(sock: socket.socket, size: int) -> bytes:
-    chunks = []
-    remaining = size
-    while remaining:
-        chunk = sock.recv(remaining)
-        if not chunk:
-            raise ConnectionError("stream connection closed")
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    return b"".join(chunks)
 
 
 def main() -> None:

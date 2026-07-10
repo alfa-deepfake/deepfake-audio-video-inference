@@ -4,28 +4,31 @@ import argparse
 import logging
 import queue
 import socket
-import struct
 import threading
 from dataclasses import dataclass, field
 
+from deepfake_media_transport import (
+    Codec,
+    MediaPacket,
+    PacketReassembler,
+    StreamType,
+    packetize_payload,
+    read_frame,
+    write_frame,
+)
+
 from backend.media_gateway.audio_engine import AudioEngineConfig, AudioInferenceEngine
-from backend.media_gateway.protocol import Codec, MediaPacket, PacketReassembler, StreamType, packetize_payload
+from backend.media_gateway.signature_cli import add_signature_verifier_args, trusted_signature_keys_from_args
+from backend.media_gateway.signature_policy import verify_packet_signature
 from backend.media_gateway.stream_signature import (
     SignatureStatus,
     StreamSignatureVerifier,
     VerificationResult,
-    parse_key_value_pairs,
 )
 from backend.media_gateway.video_engine import VideoEngineConfig, VideoInferenceEngine
 
 
-LENGTH_STRUCT = struct.Struct("!I")
-MAX_FRAME_SIZE = 16 * 1024 * 1024
 logger = logging.getLogger("media_gateway.stream_server")
-COLOR_GREEN = "\033[92m"
-COLOR_YELLOW = "\033[93m"
-COLOR_RED = "\033[91m"
-COLOR_RESET = "\033[0m"
 
 
 @dataclass(frozen=True)
@@ -108,7 +111,7 @@ class StreamSession:
     def reader(self) -> None:
         try:
             while True:
-                packet = self.reassembler.push(MediaPacket.from_bytes(self.read_frame()))
+                packet = self.reassembler.push(MediaPacket.from_bytes(read_frame(self.sock)))
                 if packet is None:
                     continue
                 verification = self.verify_packet(packet)
@@ -126,54 +129,15 @@ class StreamSession:
             self.sock.close()
 
     def verify_packet(self, packet: MediaPacket) -> VerificationResult | None:
-        if self.server.cfg.signature_policy == "off":
-            return VerificationResult(SignatureStatus.DISABLED, packet)
-        try:
-            verification = self.signature_verifier.verify_and_strip(packet)
-        except Exception as exc:
-            logger.warning("invalid signature envelope from %s: %s", self.addr, exc)
-            return None if self.server.cfg.signature_policy == "block" else VerificationResult(SignatureStatus.INVALID, packet, str(exc))
-        if verification.status not in {SignatureStatus.ABSENT, SignatureStatus.TRUSTED, SignatureStatus.DISABLED}:
-            logger.warning(
-                "%s[SIGNATURE] BAD status=%s addr=%s session=%s stream=%s seq=%s key=%s reason=%s%s",
-                COLOR_RED,
-                verification.status.value,
-                self.addr,
-                packet.header.session_id.hex(),
-                packet.header.stream_type.name,
-                packet.header.sequence_number,
-                verification.key_id,
-                verification.reason,
-                COLOR_RESET,
-            )
-            if self.server.cfg.signature_policy == "block":
-                return None
-        elif verification.status in {SignatureStatus.ABSENT, SignatureStatus.TRUSTED}:
-            log_key = (int(packet.header.stream_type), verification.status, verification.key_id)
-            if log_key not in self.signature_status_logged:
-                self.signature_status_logged.add(log_key)
-                if verification.status == SignatureStatus.TRUSTED:
-                    logger.info(
-                        "%s[SIGNATURE] TRUSTED addr=%s session=%s stream=%s key=%s first_seq=%s%s",
-                        COLOR_GREEN,
-                        self.addr,
-                        packet.header.session_id.hex(),
-                        packet.header.stream_type.name,
-                        verification.key_id,
-                        packet.header.sequence_number,
-                        COLOR_RESET,
-                    )
-                else:
-                    logger.info(
-                        "%s[SIGNATURE] UNSIGNED addr=%s session=%s stream=%s first_seq=%s%s",
-                        COLOR_YELLOW,
-                        self.addr,
-                        packet.header.session_id.hex(),
-                        packet.header.stream_type.name,
-                        packet.header.sequence_number,
-                        COLOR_RESET,
-                    )
-        return verification
+        return verify_packet_signature(
+            packet=packet,
+            verifier=self.signature_verifier,
+            policy=self.server.cfg.signature_policy,
+            logger=logger,
+            peer=self.addr,
+            logged_statuses=self.signature_status_logged,
+            color=True,
+        )
 
     def audio_worker(self) -> None:
         while True:
@@ -210,17 +174,10 @@ class StreamSession:
                 )
             )
 
-    def read_frame(self) -> bytes:
-        length = LENGTH_STRUCT.unpack(read_exact(self.sock, LENGTH_STRUCT.size))[0]
-        if length > MAX_FRAME_SIZE:
-            raise ValueError(f"stream frame too large: {length}")
-        return read_exact(self.sock, length)
-
     def write_responses(self, packets: list[MediaPacket]) -> None:
         with self.write_lock:
             for packet in packets:
-                data = packet.to_bytes()
-                self.sock.sendall(LENGTH_STRUCT.pack(len(data)) + data)
+                write_frame(self.sock, packet.to_bytes())
 
 
 def put_latest(packet_queue: queue.Queue, packet: MediaPacket) -> None:
@@ -232,18 +189,6 @@ def put_latest(packet_queue: queue.Queue, packet: MediaPacket) -> None:
         except queue.Empty:
             pass
         packet_queue.put_nowait(packet)
-
-
-def read_exact(sock: socket.socket, size: int) -> bytes:
-    chunks = []
-    remaining = size
-    while remaining:
-        chunk = sock.recv(remaining)
-        if not chunk:
-            raise ConnectionError("socket closed")
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    return b"".join(chunks)
 
 
 def parse_args() -> StreamServerConfig:
@@ -262,13 +207,7 @@ def parse_args() -> StreamServerConfig:
     parser.add_argument("--video-camera-fps", type=float, default=15.0)
     parser.add_argument("--video-python-path", default="")
     parser.add_argument("--video-cuda-lib-root", default="")
-    parser.add_argument("--signature-policy", choices=("off", "log", "block"), default="off")
-    parser.add_argument(
-        "--signature-trusted-key",
-        action="append",
-        default=[],
-        help="Trusted test stream signature key in key_id=secret format. Can be passed multiple times.",
-    )
+    add_signature_verifier_args(parser)
     args = parser.parse_args()
     return StreamServerConfig(
         host=args.host,
@@ -286,7 +225,7 @@ def parse_args() -> StreamServerConfig:
         video_python_path=args.video_python_path,
         video_cuda_lib_root=args.video_cuda_lib_root,
         signature_policy=args.signature_policy,
-        trusted_signature_keys=parse_key_value_pairs(args.signature_trusted_key),
+        trusted_signature_keys=trusted_signature_keys_from_args(args),
     )
 
 

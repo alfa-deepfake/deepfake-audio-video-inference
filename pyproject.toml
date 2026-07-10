@@ -7,6 +7,8 @@ license = "MIT"
 
 [tool.poetry.dependencies]
 python = "^3.10"
+deepfake-media-transport = { path = "../deepfake-media-transport", develop = true }
+deepfake-stream-signature = { path = "../deepfake-stream-signature", develop = true }
 Cython = "*"
 fairseq = "0.12.2"
 faiss-cpu = "1.7.3"

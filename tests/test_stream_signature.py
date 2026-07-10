@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from backend.media_gateway.protocol import Codec, MediaPacket, PacketHeader, StreamType, packetize_payload
+from deepfake_media_transport import Codec, MediaPacket, PacketHeader, StreamType, packetize_payload
+
 from backend.media_gateway.stream_signature import (
     SignatureConfig,
     SignatureStatus,
